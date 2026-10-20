@@ -1,0 +1,6 @@
+build/
+out/
+*.sln
+*.vcxproj*
+.vs/
+.vscode/
