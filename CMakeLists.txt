@@ -91,6 +91,7 @@ target_link_libraries(P3DG-ENVIRONMENT PRIVATE Vulkan::Vulkan glfw)
 
 target_compile_definitions(P3DG-ENVIRONMENT PRIVATE 
     SHADER_DIR="$<TARGET_FILE_DIR:P3DG-ENVIRONMENT>/shaders"
+    SKYBOX_DIR="${CMAKE_SOURCE_DIR}/skybox"
 )
 
 file(GLOB SHADER_SOURCES CONFIGURE_DEPENDS

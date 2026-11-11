@@ -12,39 +12,184 @@ layout(push_constant) uniform PushConstants {
     float FOV;
     float time;
     mat4 camera;
+    mat4 disk_model_matrix;
 } pc;
 
 // Scene Parameters
-vec3 blackHoleOrigin = vec3(0.0, 0.0, 0.0);
-float blackHoleRadius = 10.0;
-float blackHoleMass = 4.0;
+const vec3  BLACK_HOLE_POSITION = vec3(0.0, 0.0, 0.0);
+const float BLACK_HOLE_RADIUS   = 10.0;
+const float BLACK_HOLE_MASS     = 10.0;
 
-// vec3 lightDir = normalize(vec3(1.0, -1.0, -1.0));
+const vec3  DISK_COLOR          = vec3(0.486, 0.227, 0.0);
+const float DISK_DENSITY        = 0.35;
+const float DISK_HEIGHT         = 1.0;
+const float DISK_RADIUS_OUTER   = 70.0;
+const float DISK_RADIUS_INNER   = 10.0;
+const float DISK_ROTATION_SPEED = radians(30.0);
 
-float sphereSDF(vec3 p, float r) {
-    return length(p) - r;
+const vec3  LIGHT_DIRECTION     = normalize(vec3(0.5, 0.5, -1.0));
+const int   MAX_STEPS_LIGHTS    = 5;
+const float LIGHT_STEP_SIZE     = 0.15;
+const float SCATTERING_ANISO    = 0.3;
+
+const int   MAX_STEPS           = 1000;
+const float STEP_SIZE           = 0.2;
+const float MAX_DISTANCE        = 1000.0;
+const float HIT_DISTANCE        = 0.001;
+
+const float PI                  = 3.14159265359;
+
+float cappedCylinderSDF(vec3 p, float h, float r) {
+    vec2 d = abs(vec2(length(p.xz), p.y)) - vec2(r, h);
+    return min(max(d.x, d.y), 0.0) + length(max(d, 0.0));
 }
 
-struct HitData {
-    float distance;
-    vec4 color;
-    vec3 newDir;
-};
-
-HitData sceneSDF(vec3 p, vec3 rayDir) {
-    HitData hitData;
-
-    hitData.distance = sphereSDF(blackHoleOrigin - p, blackHoleRadius);
-    hitData.color = vec4(0.0, 0.0, 0.0, 1.0);
-
-    float distanceToBlackHole = distance(p, blackHoleOrigin);
-    hitData.newDir = normalize(rayDir + ((blackHoleOrigin - p) * hitData.distance / pow(distanceToBlackHole, 3)) * blackHoleMass); // distance = stepSize
-
-    return hitData;
+float hollowCylinderSDF(vec3 p, float h, float rOuter, float rInner) {
+    float outer = cappedCylinderSDF(p, h, rOuter);
+    float inner = cappedCylinderSDF(p, h + 0.01, rInner);
+    return max(outer, -inner);
 }
 
-void main()
-{
+float sceneSDF(vec3 rayOrigin) {
+    return hollowCylinderSDF(mat3(pc.disk_model_matrix) * (BLACK_HOLE_POSITION - rayOrigin), DISK_HEIGHT, DISK_RADIUS_OUTER, DISK_RADIUS_INNER);
+}
+
+float hash13(vec3 p) {
+    p = fract(p * 0.1031);
+    p += dot(p, p.zyx + 31.32);
+    return fract((p.x + p.y) * p.z);
+}
+
+float noise3D(vec3 p) {
+    vec3 i = floor(p);
+    vec3 f = fract(p);
+
+    f = f * f * (3.0 - 2.0 * f);
+
+    float n000 = hash13(i + vec3(0, 0, 0));
+    float n100 = hash13(i + vec3(1, 0, 0));
+    float n010 = hash13(i + vec3(0, 1, 0));
+    float n110 = hash13(i + vec3(1, 1, 0));
+    float n001 = hash13(i + vec3(0, 0, 1));
+    float n101 = hash13(i + vec3(1, 0, 1));
+    float n011 = hash13(i + vec3(0, 1, 1));
+    float n111 = hash13(i + vec3(1, 1, 1));
+
+    float nx00 = mix(n000, n100, f.x);
+    float nx10 = mix(n010, n110, f.x);
+    float nx01 = mix(n001, n101, f.x);
+    float nx11 = mix(n011, n111, f.x);
+
+    float nxy0 = mix(nx00, nx10, f.y);
+    float nxy1 = mix(nx01, nx11, f.y);
+
+    return mix(nxy0, nxy1, f.z);
+}
+
+float fbm(vec3 p) {
+    float value = 0.0;
+    float amplitude = 0.5;
+    float totalAmplitude = 0.0;
+
+    for (int i = 0; i < 2; ++i) {
+        value += amplitude * noise3D(p);
+        totalAmplitude += amplitude;
+
+        p *= 2.0;
+        amplitude *= 0.5;
+    }
+
+    return value / totalAmplitude;
+}
+
+float sampleDensity(vec3 rayOrigin) {
+    rayOrigin = mat3(pc.disk_model_matrix) * rayOrigin;
+    vec2 xz = {rayOrigin.x, rayOrigin.z};
+    float r = length(xz);
+    if(r < DISK_RADIUS_INNER || r > DISK_RADIUS_OUTER || abs(rayOrigin.y) > DISK_HEIGHT) return 0.0; // Outside of disk
+    r += 0.001;
+
+    float theta = atan(xz.y, xz.x);
+    float orbitalSpeed = DISK_ROTATION_SPEED + DISK_ROTATION_SPEED / r;
+    float angleOffset = theta + orbitalSpeed * pc.time;
+
+    // float spiral = theta - 3.0 * log(r / DISK_RADIUS_INNER) + angleOffset;
+    float spiral = theta - 2.0 * r / DISK_RADIUS_INNER + angleOffset;
+    vec3 noiseCoords = vec3(cos(spiral) * r * 0.1, rayOrigin.y * 2.0, sin(spiral) * r * 0.1);
+    float noise = fbm(noiseCoords);
+
+    float sampledDensity = noise * DISK_DENSITY;
+
+    return sampledDensity;
+}
+
+float beersLaw(float distance, float absorption) {
+  return exp(-distance * absorption);
+}
+
+float henyeyGreenstein(float g, float mu) {
+    float gg = g * g;
+    return (1.0 / (4.0 * PI)) * ((1.0 - gg) / pow(1.0 + gg - 2.0 * g * mu, 1.5));
+}
+
+float lightMarch(vec3 rayOrigin) {
+    float totalDensity = 0;
+
+    for (int i = 0; i < MAX_STEPS_LIGHTS; ++i) {
+        vec3 p = rayOrigin + LIGHT_DIRECTION * LIGHT_STEP_SIZE * i;
+        float density = sampleDensity(p);
+        totalDensity += density;
+    }
+
+    float transmittance = beersLaw(totalDensity, LIGHT_STEP_SIZE);
+
+    return transmittance;
+}
+
+vec4 rayMarch(vec3 rayOrigin, vec3 rayDir) {
+    vec3 diskColor = {0.0, 0.0, 0.0};
+    float totalTransmittance = 1.0;
+    float t_total = 0.0;
+
+    for(int i = 0; i < MAX_STEPS; ++i) {
+        vec3 toBlackHole = BLACK_HOLE_POSITION - rayOrigin;
+        float distanceToBlackHole = length(toBlackHole);
+
+        if(distanceToBlackHole < BLACK_HOLE_RADIUS || t_total > MAX_DISTANCE) break;
+
+        float dist = sceneSDF(rayOrigin); // Negative if we are inside because SIGNED distance field
+        float dynamicDist = STEP_SIZE;
+
+        if(dist > HIT_DISTANCE) { // Dyanmic step size
+            dynamicDist = min(dist, max(STEP_SIZE, (distanceToBlackHole - BLACK_HOLE_RADIUS) * 0.1)); // Smaller steps near the black hole
+        }
+
+        if(dist < HIT_DISTANCE) {
+            float diskDensity = sampleDensity(rayOrigin + rayDir * dynamicDist);
+
+            float transmittance = lightMarch(rayOrigin); // Sample how much light we getting through the volumetric surface
+            float phase = henyeyGreenstein(SCATTERING_ANISO, dot(rayDir, LIGHT_DIRECTION)); // Anisotropic forward scattering
+
+            diskColor += totalTransmittance * transmittance * phase * DISK_COLOR;
+            totalTransmittance *= beersLaw(diskDensity * 2.0, dynamicDist);
+            if(totalTransmittance < 0.01) break;
+        }
+
+        vec3 gravityDir = toBlackHole * dynamicDist / pow(distanceToBlackHole, 3) * BLACK_HOLE_MASS; // Bend towards the black hole using Newton's Law of Universal Gravitation
+
+        t_total += dynamicDist;
+        rayOrigin = rayOrigin + rayDir * dynamicDist;
+        rayDir = normalize(rayDir + gravityDir);
+    }
+
+    vec3 color;
+    if(length(rayOrigin) < BLACK_HOLE_RADIUS) color = vec3(0.0, 0.0, 0.0); // Event Horizon
+    else color = texture(skybox, rayDir).xyz * totalTransmittance;
+
+    return vec4(color + diskColor, 1.0);
+}
+
+void main() {
     // Camera
     vec3 right   = vec3(pc.camera[0]);
     vec3 up      = vec3(pc.camera[1]);
@@ -56,32 +201,7 @@ void main()
     vec3 rayOrigin = eye;
     vec3 rayDir = normalize(forward * pc.FOV + right * pixel.x + up * pixel.y);
 
-    // Ray Marching Settings
-    float t = 0.0;
-    float t_total = 0.0;
-    const int MAX_ITERATIONS = 64;
-    const float CLOSEST_DISTANCE = 0.1;
-    const float MAX_DISTANCE = 1000;
-    HitData hitData;
-
-    for(int i = 0; i < MAX_ITERATIONS; ++i) {
-        rayOrigin = rayOrigin + rayDir * t;
-
-        hitData = sceneSDF(rayOrigin, rayDir);
-        t_total += hitData.distance;
-        t = hitData.distance;
-        rayDir = hitData.newDir;
-
-        if(hitData.distance < CLOSEST_DISTANCE || t_total > MAX_DISTANCE) break;
-    }
-
-    vec4 color;
-    if(hitData.distance < CLOSEST_DISTANCE) {
-        color = hitData.color;
-    }
-    else {
-        color = texture(skybox, rayDir);
-    }
+    vec4 color = rayMarch(rayOrigin, rayDir);
 
     imageStore(out_image, ivec2(gl_GlobalInvocationID.xy), color);
 }

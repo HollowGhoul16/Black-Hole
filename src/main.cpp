@@ -14,6 +14,8 @@
 #include <cmath>
 #include <fstream>
 #include <filesystem>
+#include <chrono>
+#include <thread>
 
 #include "../include/libs/stb/stb_image.h"
 #include <glm/glm.hpp>
@@ -31,14 +33,11 @@
         }                                                               \
     } while (0)
 
-// static const uint32_t WINDOW_WIDTH = 800;
-// static const uint32_t WINDOW_HEIGHT = 800;
-static const uint32_t WINDOW_WIDTH = 1920;
-static const uint32_t WINDOW_HEIGHT = 1080;
-static const uint32_t FRAME_WIDTH = WINDOW_WIDTH;
+static const uint32_t WINDOW_WIDTH = 800;
+static const uint32_t WINDOW_HEIGHT = 800;
+static uint32_t FRAME_WIDTH = WINDOW_WIDTH;
 static const uint32_t FRAME_HEIGHT = WINDOW_HEIGHT;
 static const uint32_t FRAMES_IN_FLIGHT = 3;
-// static const char* COMPUTE_SHADER_PATH = SHADER_DIR "/myshader.comp.spv";
 static const char* COMPUTE_SHADER_PATH = SHADER_DIR "/blackhole.comp.spv";
 
 //validation layers pass debug messages to this function
@@ -148,14 +147,46 @@ int main()
 
     glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
 
-    const char* window_title = "P3DG-PROJECT1";
+    struct Window {
+        // GLFWwindow* window = nullptr;
+        GLFWmonitor* monitor = nullptr;
+        const GLFWvidmode* vidmode = nullptr;
 
-    GLFWwindow* window = glfwCreateWindow(WINDOW_WIDTH, WINDOW_HEIGHT, window_title, nullptr, nullptr);
+        float aspect;
+        int monitorX;
+        int monitorY;
+        int fullscreenWidth;
+        int fullscreenHeight;
+    } window_data;
+
+    window_data.monitor = glfwGetPrimaryMonitor();
+    window_data.vidmode = glfwGetVideoMode(window_data.monitor);
+
+    glfwWindowHint(GLFW_RED_BITS, window_data.vidmode->redBits);
+    glfwWindowHint(GLFW_GREEN_BITS, window_data.vidmode->greenBits);
+    glfwWindowHint(GLFW_BLUE_BITS, window_data.vidmode->blueBits);
+    glfwWindowHint(GLFW_REFRESH_RATE, window_data.vidmode->refreshRate);
+
+    glfwGetMonitorPos(window_data.monitor, &window_data.monitorX, &window_data.monitorY);
+
+    window_data.fullscreenWidth = window_data.vidmode->width;
+    window_data.fullscreenHeight = window_data.vidmode->height;
+    window_data.aspect = (float)window_data.fullscreenWidth / window_data.fullscreenHeight;
+    FRAME_WIDTH = (float)FRAME_WIDTH * window_data.aspect;
+
+    glfwWindowHint(GLFW_DECORATED, GLFW_FALSE);
+    glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
+
+    const char* window_title = "Black Hole";
+
+    GLFWwindow* window = glfwCreateWindow(window_data.fullscreenWidth, window_data.fullscreenHeight, window_title, nullptr, nullptr);
 
     if (!window) {
         std::fprintf(stderr, "glfwCreateWindow failed\n");
         return EXIT_FAILURE;
     }
+
+    glfwShowWindow(window);
 
     ValidationLog() << "=== VALIDATION LOG: " << window_title << " ===\n" << std::flush;
     std::fprintf(stderr, "[info] validation log location: %s\n", std::filesystem::absolute("validation.txt").string().c_str());
@@ -525,13 +556,14 @@ int main()
     char* texture_data[6];
     int cubemap_width, cubemap_height, channels;
 
-    // TODO: fix weird paths
-    texture_data[0] = (char*)stbi_load("../../skybox/px.png", &cubemap_width, &cubemap_height, &channels, STBI_rgb_alpha);
-    texture_data[1] = (char*)stbi_load("../../skybox/nx.png", &cubemap_width, &cubemap_height, &channels, STBI_rgb_alpha);
-    texture_data[2] = (char*)stbi_load("../../skybox/ny.png", &cubemap_width, &cubemap_height, &channels, STBI_rgb_alpha); // In vulkan +Y is flipped
-    texture_data[3] = (char*)stbi_load("../../skybox/py.png", &cubemap_width, &cubemap_height, &channels, STBI_rgb_alpha);
-    texture_data[4] = (char*)stbi_load("../../skybox/pz.png", &cubemap_width, &cubemap_height, &channels, STBI_rgb_alpha);
-    texture_data[5] = (char*)stbi_load("../../skybox/nz.png", &cubemap_width, &cubemap_height, &channels, STBI_rgb_alpha);
+    std::string skybox_dir = SKYBOX_DIR;
+
+    texture_data[0] = (char*)stbi_load((skybox_dir + "/px.png").c_str(), &cubemap_width, &cubemap_height, &channels, STBI_rgb_alpha);
+    texture_data[1] = (char*)stbi_load((skybox_dir + "/nx.png").c_str(), &cubemap_width, &cubemap_height, &channels, STBI_rgb_alpha);
+    texture_data[2] = (char*)stbi_load((skybox_dir + "/ny.png").c_str(), &cubemap_width, &cubemap_height, &channels, STBI_rgb_alpha); // In vulkan +Y is flipped
+    texture_data[3] = (char*)stbi_load((skybox_dir + "/py.png").c_str(), &cubemap_width, &cubemap_height, &channels, STBI_rgb_alpha);
+    texture_data[4] = (char*)stbi_load((skybox_dir + "/pz.png").c_str(), &cubemap_width, &cubemap_height, &channels, STBI_rgb_alpha);
+    texture_data[5] = (char*)stbi_load((skybox_dir + "/nz.png").c_str(), &cubemap_width, &cubemap_height, &channels, STBI_rgb_alpha);
 
     VkImageCreateInfo image_info = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
@@ -880,14 +912,14 @@ int main()
     glm::vec4 right  = {1.0, 0.0, 0.0, 0.0};
     glm::vec4 up     = {0.0, 1.0, 0.0, 0.0};
     glm::vec4 lookAt = {0.0, 0.0, -1.0, 0.0};
-    glm::vec4 eye    = {0.0, 0.0, 50.0, 1.0};
+    glm::vec4 eye    = {0.0, -10.0, 130.0, 1.0};
 
     glm::mat4 camera = {right, up, lookAt, eye};
 
     VkPushConstantRange push_constant_range = {
         .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
         .offset = 0,
-        .size = (sizeof(int) * 2 + sizeof(float) * 2 + sizeof(glm::mat4)),
+        .size = (sizeof(int) * 2 + sizeof(float) * 2 + sizeof(glm::mat4) * 2),
     };
 
     VkPipelineLayoutCreateInfo pipeline_layout_info = {
@@ -1142,11 +1174,24 @@ int main()
     std::chrono::milliseconds last_frame_ms = start_ms;
     std::chrono::milliseconds delta_ms = start_ms;
 
+    // Disk tilt
+    const float TILT = glm::radians(23.44);
+    const glm::mat4 DISK_MODEL_MATRIX = glm::inverse(glm::rotate(glm::mat4(1.0f), TILT, glm::vec3(0.0f, 0.0f, 1.0f)));
+
     // INPUT SETTING CONSTANTS
     const float SHIFT = 30.0;
-    const float THETA = glm::radians(90.0f);
 
-    // float pitch = 0.0f, yaw = 0.0f;
+    const float MOUSE_SENSITIVITY = 0.001f;
+    float pitch = 0.0f, yaw = 0.0f;
+
+    double mouseX = 0.0, mouseY = 0.0;
+    double lastX = 0.0, lastY = 0.0;
+
+    glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+    glfwFocusWindow(window);
+    glfwSetCursorPos(window, (window_data.fullscreenWidth / 2.0), (window_data.fullscreenHeight / 2.0));
+    glfwGetCursorPos(window, &lastX, &lastY);
+    std::this_thread::sleep_for(std::chrono::milliseconds(100)); // Ensure cursor position is updated before render loop
 
     while (!glfwWindowShouldClose(window)) {
         glfwPollEvents();
@@ -1164,7 +1209,7 @@ int main()
 
         float delta = delta_ms.count() / (float)1000;
         
-        // Handle Inputs
+        // Handle Keyboard Inputs
         if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) {
             glfwSetWindowShouldClose(window, GLFW_TRUE);
         }
@@ -1183,21 +1228,30 @@ int main()
         if (glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS) {
             camera = glm::translate(camera, glm::vec3(0, -SHIFT, 0.0) * delta);
         }
-        if (glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS) {
+        if (glfwGetKey(window, GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS) {
             camera = glm::translate(camera, glm::vec3(0, SHIFT, 0.0) * delta);
         }
-        if (glfwGetKey(window, GLFW_KEY_R) == GLFW_PRESS) {
-            camera = glm::rotate(camera, THETA * delta, glm::vec3(1.0f, 0.0f, 0.0f));
-        }
-        if (glfwGetKey(window, GLFW_KEY_F) == GLFW_PRESS) {
-            camera = glm::rotate(camera, -THETA * delta, glm::vec3(1.0f, 0.0f, 0.0f));
-        }
-        if (glfwGetKey(window, GLFW_KEY_E) == GLFW_PRESS) {
-            camera = glm::rotate(camera, THETA * delta, glm::vec3(0.0f, 1.0f, 0.0f));
-        }
-        if (glfwGetKey(window, GLFW_KEY_Q) == GLFW_PRESS) {
-            camera = glm::rotate(camera, -THETA * delta, glm::vec3(0.0f, 1.0f, 0.0f));
-        }
+
+        // Handle Mouse Inputs
+        glfwGetCursorPos(window, &mouseX, &mouseY);
+
+        float xOffset = static_cast<float>(mouseX - lastX);
+        float yOffset = static_cast<float>(mouseY - lastY);
+
+        lastX = mouseX;
+        lastY = mouseY;
+
+        yaw = -xOffset * MOUSE_SENSITIVITY;
+        pitch = -yOffset * MOUSE_SENSITIVITY;
+
+        if (yaw != 0.0f) {
+            glm::mat4 yawRot = glm::rotate(glm::mat4(1.0f), yaw, glm::vec3(0.0f, 1.0f, 0.0f));
+            camera[0] = yawRot * camera[0];
+            camera[1] = yawRot * camera[1];
+            camera[2] = yawRot * camera[2];
+        };
+
+        if (pitch != 0.0f) camera = glm::rotate(camera, pitch, glm::vec3(1.0f, 0.0f, 0.0f));
 
         VK_CHECK(vkResetCommandBuffer(command_buffers[current_frame], 0));
 
@@ -1215,9 +1269,10 @@ int main()
             float FOV;
             float time;
             glm::mat4 camera;
+            glm::mat4 disk_model_mat;
         };
 
-        PushConstants pc = {(int)FRAME_WIDTH, (int)FRAME_HEIGHT, FOV, (curr_ms - start_ms).count() / 1.0e3f, camera};
+        PushConstants pc = {(int)FRAME_WIDTH, (int)FRAME_HEIGHT, FOV, (curr_ms - start_ms).count() / 1.0e3f, camera, DISK_MODEL_MATRIX};
 
         vkCmdBindPipeline(command_buffers[current_frame], VK_PIPELINE_BIND_POINT_COMPUTE, compute_pipeline);
         vkCmdBindDescriptorSets(command_buffers[current_frame], VK_PIPELINE_BIND_POINT_COMPUTE, pipeline_layout, 0, 1, &descriptor_set[current_frame], 0, nullptr);
@@ -1287,7 +1342,7 @@ int main()
                 .baseArrayLayer = 0,
                 .layerCount = 1,
             },
-            .srcOffsets = { {0, 0, 0}, {FRAME_WIDTH, FRAME_HEIGHT, 1} },
+            .srcOffsets = { {0, 0, 0}, {(int32_t)FRAME_WIDTH, FRAME_HEIGHT, 1} },
             .dstSubresource = {
                 .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
                 .mipLevel = 0,
